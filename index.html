@@ -289,30 +289,64 @@
       }
     }
 
+    function waitForVideoMetadata(timeoutMs) {
+      return new Promise(function(resolve) {
+        let done = false;
+        let pollId = null;
+
+        function finish() {
+          if (done) return;
+          done = true;
+          video.removeEventListener('loadedmetadata', finish);
+          video.removeEventListener('resize', finish);
+          if (pollId !== null) clearInterval(pollId);
+          resolve();
+        }
+
+        video.addEventListener('loadedmetadata', finish);
+        video.addEventListener('resize', finish);
+
+        // Backup poll — some browsers don't fire loadedmetadata reliably
+        // when the srcObject is swapped on a live MediaStream.
+        pollId = setInterval(function() {
+          if (video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= 2) {
+            finish();
+          }
+        }, 80);
+
+        setTimeout(finish, timeoutMs);
+      });
+    }
+
     async function setupCamera(facing) {
+      // 1. Fully tear down the old stream so videoWidth/readyState reset
       if (stream) {
         stream.getTracks().forEach(function(t){ t.stop(); });
         stream = null;
       }
+      try { video.pause(); } catch (e) { /* ignore */ }
+      video.srcObject = null;
 
+      // Let the media element run its load/reset algorithm
+      await new Promise(function(r){ setTimeout(r, 60); });
+
+      // 2. Attach the new stream
       stream = await getStreamForFacing(facing);
       video.srcObject = stream;
 
-      await new Promise(function(resolve) {
-        let done = false;
-        const finish = function(){ if (!done) { done = true; resolve(); } };
-        if (video.readyState >= 2 && video.videoWidth) return finish();
-        video.addEventListener('loadedmetadata', finish, { once: true });
-        video.addEventListener('loadeddata', finish, { once: true });
-        setTimeout(finish, 2500);
-      });
+      // 3. Wait for the new dimensions to actually arrive
+      await waitForVideoMetadata(3000);
 
       try { await video.play(); } catch (e) { /* ignore autoplay hiccups */ }
 
-      videoWidth = video.videoWidth || 640;
+      // 4. Read dimensions AFTER the new stream is live
+      videoWidth  = video.videoWidth  || 640;
       videoHeight = video.videoHeight || 480;
 
-      // Mirror only when looking at the front (selfie) camera
+      // 5. Mirror only for the front (selfie) camera.
+      //    This single flag flips BOTH the video feed and the
+      //    skeleton/head-box/lightning because they're all drawn
+      //    inside the same ctx.scale(-1, 1) transform.
       mirror = (facing === 'user');
       currentFacing = facing;
     }
@@ -321,19 +355,32 @@
       if (switchingCamera || !videoReady) return;
       switchingCamera = true;
       cameraBtn.disabled = true;
+
       const previous = currentFacing;
       const next = currentFacing === 'user' ? 'environment' : 'user';
+
+      // Pause the detection loop while the video element is mid-swap
+      videoReady = false;
+
       try {
         await setupCamera(next);
+        videoReady = true;
         resizeCanvas();
+      } catch (err) {
+        console.error('Camera switch failed:', err);
+        // Best-effort restore of the previous camera
+        try {
+          await setupCamera(previous);
+        } catch (e2) {
+          console.error('Restore after failed switch also failed:', e2);
+        }
+        videoReady = true;
+        resizeCanvas();
+      } finally {
+        // Update label to reflect the CURRENT camera
         cameraBtn.textContent = currentFacing === 'user'
           ? '📷 Front camera'
           : '📷 Back camera';
-      } catch (err) {
-        console.error('Camera switch failed:', err);
-        // Try to restore the previous camera
-        try { await setupCamera(previous); } catch (e2) { console.error(e2); }
-      } finally {
         switchingCamera = false;
         cameraBtn.disabled = false;
       }
@@ -554,15 +601,25 @@
     let lastStatusUpdate = 0;
 
     async function detectAndDraw() {
+      // Pause the loop while the video element is being swapped
       if (!detector || !videoReady) {
         requestAnimationFrame(detectAndDraw);
         return;
       }
 
-      const detections = await detector.estimatePoses(video, {
-        maxPoses: 10,
-        flipHorizontal: false
-      });
+      // Guard the pose estimation so a transient video error can NEVER
+      // kill the render loop (this was the main camera-switch bug).
+      let detections = [];
+      try {
+        detections = await detector.estimatePoses(video, {
+          maxPoses: 10,
+          flipHorizontal: false
+        });
+      } catch (err) {
+        // Skip this frame, but keep the loop alive
+        requestAnimationFrame(detectAndDraw);
+        return;
+      }
       poses = detections;
 
       /* ---------- shock timing ---------- */
@@ -573,7 +630,6 @@
         const p = (now - shockState.start) / SHOCK_DURATION_MS;
         if (p >= 1) {
           shockState.active = false;
-          // schedule the next one: interval ± a little randomness
           shockState.nextAt = now + shockIntervalMs * (0.85 + Math.random() * 0.3);
         } else {
           const decay = 1 - p;
@@ -629,6 +685,9 @@
 
       ctx.save();
       ctx.translate(offsetX + drawW / 2, offsetY + drawH / 2);
+      // This single flip handles mirroring for the front camera.
+      // For the environment camera, mirror === false, so nothing flips
+      // and the world view (and skeleton over it) stays un-mirrored.
       if (mirror) ctx.scale(-1, 1);
       const scaleX = drawW / videoWidth;
       const scaleY = drawH / videoHeight;
@@ -739,7 +798,6 @@
               if (Math.random() < 0.55) {
                 p2 = valid[(Math.random() * valid.length) | 0];
               } else {
-                // arc off into space
                 p2 = {
                   x: p1.x + (Math.random() - 0.5) * 900,
                   y: p1.y + (Math.random() - 0.5) * 900
@@ -772,6 +830,8 @@
       /* ---------- "ART WORKER" label ---------- */
       for (let i = 0; i < headPositions.length; i++) {
         const pos = headPositions[i];
+        // Label is drawn in screen space AFTER the mirror transform is
+        // undone, so we have to apply the mirror manually here too.
         const mirrorFactor = mirror ? -1 : 1;
         const cxShift = pos.cx - videoWidth / 2;
         const cyShift = pos.cy - videoHeight / 2;
