@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ART WORKER Recognition</title>
+  <style>
+    /* ---- Reset ---- */
+    body, html {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    /* ---- Stripes layer (behind everything) ---- */
+    #stripes {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 0;
+      background: repeating-linear-gradient(
+        45deg,
+        #ffcc00 0px,
+        #ffcc00 60px,
+        #000000 60px,
+        #000000 120px
+      );
+      pointer-events: none;
+    }
+
+    /* ---- Container (on top of stripes) ---- */
+    #container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1;
+      background: transparent !important;
+    }
+
+    #canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: transparent !important;
+    }
+
+    /* ---- Controls ---- */
+    #controls {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      right: 10px;
+      z-index: 5;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      color: #fff;
+      background: rgba(0,0,0,0.6);
+      padding: 8px 10px;
+      border-radius: 8px;
+      backdrop-filter: blur(4px);
+      user-select: none;
+    }
+    #controls button, #controls label {
+      cursor: pointer;
+      background: #111;
+      color: #ffcc00;
+      border: 1px solid #ffcc00;
+      border-radius: 4px;
+      padding: 5px 9px;
+      font-family: inherit;
+      font-size: 12px;
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    #controls button:hover, #controls label:hover {
+      background: #ffcc00;
+      color: #111;
+    }
+    #controls button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    #intervalWrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(0,0,0,0.4);
+      border: 1px solid rgba(255,204,0,0.5);
+      border-radius: 4px;
+      padding: 3px 8px;
+      white-space: nowrap;
+    }
+    #intervalRange {
+      width: 110px;
+      accent-color: #ffcc00;
+      cursor: pointer;
+    }
+    #intervalVal {
+      color: #ffcc00;
+      min-width: 42px;
+      text-align: right;
+    }
+    #status {
+      color: #aaa;
+      min-width: 130px;
+      margin-left: auto;
+    }
+    #status.shocking {
+      color: #fff;
+      text-shadow: 0 0 8px #fff, 0 0 16px #6cf;
+    }
+
+    /* ---- Loading overlay ---- */
+    #loading {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.85);
+      color: #fff;
+      font-family: 'Courier New', monospace;
+      font-size: 18px;
+      text-align: center;
+      padding: 20px;
+      box-sizing: border-box;
+      transition: opacity 0.8s ease;
+    }
+    #loading.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #loading .ascii-art {
+      font-size: 14px;
+      white-space: pre;
+      line-height: 1.2;
+      margin-bottom: 20px;
+      color: #ffcc00;
+    }
+
+    #loading .spinner {
+      display: inline-block;
+      width: 40px;
+      height: 40px;
+      border: 4px solid rgba(255,255,255,0.2);
+      border-top: 4px solid #ffcc00;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-top: 20px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .loading-dots::after {
+      content: '';
+      animation: dots 1.5s steps(4, end) infinite;
+    }
+    @keyframes dots {
+      0% { content: ''; }
+      25% { content: '.'; }
+      50% { content: '..'; }
+      75% { content: '...'; }
+      100% { content: ''; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Stripes layer -->
+  <div id="stripes"></div>
+
+  <!-- Controls -->
+  <div id="controls">
+    <button id="soundBtn" type="button">🔊 Sound: ON</button>
+    <button id="cameraBtn" type="button">📷 Front camera</button>
+    <div id="intervalWrap">
+      <label for="intervalRange">⏱ Every</label>
+      <input id="intervalRange" type="range" min="2" max="20" step="0.5" value="7" />
+      <span id="intervalVal">7.0s</span>
+    </div>
+    <button id="testBtn" type="button">⚡ Test shock</button>
+    <span id="status">next shock in 7.0s</span>
+  </div>
+
+  <!-- Loading overlay -->
+  <div id="loading">
+    <div class="ascii-art">
+      <pre>
+   ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄ 
+  ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌
+  ▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀▀▀▀▀▀ 
+  ▐░▌          ▐░▌       ▐░▌▐░▌       ▐░▌▐░▌          
+  ▐░█▄▄▄▄▄▄▄▄▄ ▐░█▄▄▄▄▄▄▄█░▌▐░█▄▄▄▄▄▄▄█░▌▐░▌          
+  ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░▌          
+  ▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀▀▀ ▐░▌          
+  ▐░▌          ▐░▌          ▐░▌          ▐░▌          
+  ▐░▌          ▐░▌          ▐░▌          ▐░█▄▄▄▄▄▄▄▄▄ 
+  ▐░▌          ▐░▌          ▐░▌          ▐░░░░░░░░░░░▌
+  ▀▀            ▀▀            ▀▀            ▀▀▀▀▀▀▀▀▀▀▀ 
+      </pre>
+    </div>
+    <div style="font-size: 24px; color: #ffcc00; margin-bottom: 10px;">
+      ART WORKER <span class="loading-dots">loading</span>
+    </div>
+    <div style="font-size: 16px; color: #aaa;">
+      Loading AI model… please wait
+    </div>
+    <div class="spinner"></div>
+  </div>
+
+  <!-- Canvas container -->
+  <div id="container">
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <!-- Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+
+  <script>
+  (function(){
+    'use strict';
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const loadingEl = document.getElementById('loading');
+    const statusEl = document.getElementById('status');
+    const soundBtn = document.getElementById('soundBtn');
+    const cameraBtn = document.getElementById('cameraBtn');
+    const testBtn = document.getElementById('testBtn');
+    const intervalRange = document.getElementById('intervalRange');
+    const intervalVal = document.getElementById('intervalVal');
+
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;              // needed for autoplay on mobile
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
+    video.style.display = 'none';
+
+    let detector = null;
+    let poses = [];
+    let videoReady = false;
+    let videoWidth = 640, videoHeight = 480;
+    let mirror = true;               // mirrored only for the front camera
+
+    /* ============================================================
+       CAMERA
+       ============================================================ */
+    let currentFacing = 'user';      // 'user' | 'environment'
+    let stream = null;
+    let switchingCamera = false;
+
+    async function getStreamForFacing(facing) {
+      const size = { width: { ideal: 640 }, height: { ideal: 480 } };
+      try {
+        // Prefer an exact match so phones actually flip the lens
+        return await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: facing }, width: size.width, height: size.height }
+        });
+      } catch (e) {
+        // Fall back to a relaxed request
+        return await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: facing, width: size.width, height: size.height }
+        });
+      }
+    }
+
+    async function setupCamera(facing) {
+      if (stream) {
+        stream.getTracks().forEach(function(t){ t.stop(); });
+        stream = null;
+      }
+
+      stream = await getStreamForFacing(facing);
+      video.srcObject = stream;
+
+      await new Promise(function(resolve) {
+        let done = false;
+        const finish = function(){ if (!done) { done = true; resolve(); } };
+        if (video.readyState >= 2 && video.videoWidth) return finish();
+        video.addEventListener('loadedmetadata', finish, { once: true });
+        video.addEventListener('loadeddata', finish, { once: true });
+        setTimeout(finish, 2500);
+      });
+
+      try { await video.play(); } catch (e) { /* ignore autoplay hiccups */ }
+
+      videoWidth = video.videoWidth || 640;
+      videoHeight = video.videoHeight || 480;
+
+      // Mirror only when looking at the front (selfie) camera
+      mirror = (facing === 'user');
+      currentFacing = facing;
+    }
+
+    async function switchCamera() {
+      if (switchingCamera || !videoReady) return;
+      switchingCamera = true;
+      cameraBtn.disabled = true;
+      const previous = currentFacing;
+      const next = currentFacing === 'user' ? 'environment' : 'user';
+      try {
+        await setupCamera(next);
+        resizeCanvas();
+        cameraBtn.textContent = currentFacing === 'user'
+          ? '📷 Front camera'
+          : '📷 Back camera';
+      } catch (err) {
+        console.error('Camera switch failed:', err);
+        // Try to restore the previous camera
+        try { await setupCamera(previous); } catch (e2) { console.error(e2); }
+      } finally {
+        switchingCamera = false;
+        cameraBtn.disabled = false;
+      }
+    }
+
+    cameraBtn.addEventListener('click', function(){
+      unlockAudio();
+      switchCamera();
+    });
+
+    /* ============================================================
+       SHOCK STATE
+       ============================================================ */
+    const SHOCK_DURATION_MS = 700;   // how long the zap lasts
+    let shockIntervalMs = 7000;      // adjustable via the slider
+    const shockState = {
+      active: false,
+      start: 0,
+      nextAt: performance.now() + shockIntervalMs
+    };
+
+    function triggerShock(now) {
+      shockState.active = true;
+      shockState.start = now;
+      playShockSound();
+    }
+
+    /* ============================================================
+       AUDIO  (synthesised zap)
+       ============================================================ */
+    let audioCtx = null;
+    let masterGain = null;
+    let noiseBuffer = null;
+    let soundEnabled = true;
+
+    function initAudio() {
+      if (audioCtx) return audioCtx;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      audioCtx = new AC();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = 0.7;
+      masterGain.connect(audioCtx.destination);
+      return audioCtx;
+    }
+
+    function getNoiseBuffer() {
+      if (noiseBuffer) return noiseBuffer;
+      const len = Math.floor(audioCtx.sampleRate * 1.0);
+      noiseBuffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+      const d = noiseBuffer.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      return noiseBuffer;
+    }
+
+    function playShockSound() {
+      if (!soundEnabled) return;
+      const a = initAudio();
+      if (!a) return;
+      if (a.state === 'suspended') a.resume();
+      playZapSynth();
+    }
+
+    // Synthesised high-voltage zap: crack + buzz + crackles
+    function playZapSynth() {
+      if (!audioCtx) return;
+      const t0 = audioCtx.currentTime;
+      const nb = getNoiseBuffer();
+
+      // --- 1. initial CRACK ---
+      const crack = audioCtx.createBufferSource();
+      crack.buffer = nb;
+      const bp = audioCtx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.Q.value = 0.9;
+      bp.frequency.setValueAtTime(4200, t0);
+      bp.frequency.exponentialRampToValueAtTime(400, t0 + 0.32);
+      const cg = audioCtx.createGain();
+      cg.gain.setValueAtTime(0.9, t0);
+      cg.gain.exponentialRampToValueAtTime(0.001, t0 + 0.38);
+      crack.connect(bp); bp.connect(cg); cg.connect(masterGain);
+      crack.start(t0, Math.random() * 0.5, 0.4);
+
+      // --- 2. electric BUZZ ---
+      const osc = audioCtx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(95, t0);
+      osc.frequency.exponentialRampToValueAtTime(34, t0 + 0.5);
+      const lp = audioCtx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 1400;
+      const og = audioCtx.createGain();
+      og.gain.setValueAtTime(0.0001, t0);
+      og.gain.exponentialRampToValueAtTime(0.28, t0 + 0.02);
+      og.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.55);
+      osc.connect(lp); lp.connect(og); og.connect(masterGain);
+      osc.start(t0); osc.stop(t0 + 0.6);
+
+      // --- 3. random CRACKLES ---
+      for (let i = 0; i < 7; i++) {
+        const t = t0 + 0.03 + Math.random() * 0.42;
+        const s = audioCtx.createBufferSource();
+        s.buffer = nb;
+        const f = audioCtx.createBiquadFilter();
+        f.type = 'highpass';
+        f.frequency.value = 1500 + Math.random() * 3000;
+        const g = audioCtx.createGain();
+        const vol = 0.12 + Math.random() * 0.25;
+        g.gain.setValueAtTime(vol, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+        s.connect(f); f.connect(g); g.connect(masterGain);
+        s.start(t, Math.random() * 0.6, 0.06);
+      }
+    }
+
+    // Unlock audio on first user gesture (required on mobile)
+    function unlockAudio() {
+      const a = initAudio();
+      if (a && a.state === 'suspended') a.resume();
+    }
+    window.addEventListener('pointerdown', unlockAudio);
+    window.addEventListener('keydown', unlockAudio);
+
+    // --- UI: sound toggle ---
+    soundBtn.addEventListener('click', function(){
+      soundEnabled = !soundEnabled;
+      soundBtn.textContent = soundEnabled ? '🔊 Sound: ON' : '🔇 Sound: OFF';
+      if (soundEnabled) { unlockAudio(); }
+    });
+
+    /* ============================================================
+       UI: SHOCK INTERVAL PICKER
+       ============================================================ */
+    function updateIntervalLabel() {
+      intervalVal.textContent = (shockIntervalMs / 1000).toFixed(1) + 's';
+    }
+
+    intervalRange.addEventListener('input', function(){
+      shockIntervalMs = parseFloat(intervalRange.value) * 1000;
+      updateIntervalLabel();
+      // If we're waiting between shocks, restart the countdown with the new value
+      if (!shockState.active) {
+        shockState.nextAt = performance.now() + shockIntervalMs;
+      }
+    });
+    intervalRange.addEventListener('change', unlockAudio);
+    updateIntervalLabel();
+
+    // --- UI: manual test ---
+    testBtn.addEventListener('click', function(){
+      unlockAudio();
+      const now = performance.now();
+      triggerShock(now);
+      shockState.nextAt = now + shockIntervalMs;
+    });
+
+    /* ============================================================
+       MODEL
+       ============================================================ */
+    async function loadDetector() {
+      const model = poseDetection.SupportedModels.MoveNet;
+      const config = {
+        modelType: poseDetection.movenet.modelType.MULTIPOSE_LIGHTNING,
+        enableSmoothing: false,
+        minPoseScore: 0.25
+      };
+      detector = await poseDetection.createDetector(model, config);
+    }
+
+    function resizeCanvas() {
+      const container = document.getElementById('container');
+      const rect = container.getBoundingClientRect();
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    /* ============================================================
+       SHOCK HELPERS
+       ============================================================ */
+
+    // Shake every keypoint: a shared body-jerk + per-joint convulsion noise
+    function jitterKeypoints(keypoints, amp) {
+      const jerkX = (Math.random() - 0.5) * 30 * amp;
+      const jerkY = (Math.random() - 0.5) * 30 * amp;
+      const noise = 30 * amp;
+      const out = new Array(keypoints.length);
+      for (let i = 0; i < keypoints.length; i++) {
+        const kp = keypoints[i];
+        if (!kp || kp.score < 0.25) { out[i] = kp; continue; }
+        out[i] = {
+          x: kp.x + jerkX + (Math.random() - 0.5) * noise,
+          y: kp.y + jerkY + (Math.random() - 0.5) * noise,
+          score: kp.score,
+          name: kp.name
+        };
+      }
+      return out;
+    }
+
+    // Jagged lightning bolt between two points
+    function drawLightning(x1, y1, x2, y2, segments, displace) {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      for (let i = 1; i < segments; i++) {
+        const t = i / segments;
+        const mx = x1 + (x2 - x1) * t + (Math.random() - 0.5) * displace;
+        const my = y1 + (y2 - y1) * t + (Math.random() - 0.5) * displace;
+        ctx.lineTo(mx, my);
+      }
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+
+    /* ============================================================
+       MAIN LOOP
+       ============================================================ */
+    let lastStatusUpdate = 0;
+
+    async function detectAndDraw() {
+      if (!detector || !videoReady) {
+        requestAnimationFrame(detectAndDraw);
+        return;
+      }
+
+      const detections = await detector.estimatePoses(video, {
+        maxPoses: 10,
+        flipHorizontal: false
+      });
+      poses = detections;
+
+      /* ---------- shock timing ---------- */
+      const now = performance.now();
+      let shockAmp = 0;
+
+      if (shockState.active) {
+        const p = (now - shockState.start) / SHOCK_DURATION_MS;
+        if (p >= 1) {
+          shockState.active = false;
+          // schedule the next one: interval ± a little randomness
+          shockState.nextAt = now + shockIntervalMs * (0.85 + Math.random() * 0.3);
+        } else {
+          const decay = 1 - p;
+          const flicker = Math.random() < 0.30 ? 0.35 : 1.0;
+          shockAmp = decay * flicker;
+        }
+      } else if (now >= shockState.nextAt) {
+        triggerShock(now);
+        shockAmp = 1;
+      }
+
+      const shocking = shockAmp > 0.05;
+
+      /* ---------- status readout ---------- */
+      if (now - lastStatusUpdate > 150) {
+        lastStatusUpdate = now;
+        if (shockState.active) {
+          statusEl.textContent = '⚡ SHOCK ⚡';
+          statusEl.classList.add('shocking');
+        } else {
+          const remaining = Math.max(0, (shockState.nextAt - now) / 1000);
+          statusEl.textContent = 'next shock in ' + remaining.toFixed(1) + 's';
+          statusEl.classList.remove('shocking');
+        }
+      }
+
+      /* ---------- clear + shake ---------- */
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      let shakeX = 0, shakeY = 0;
+      if (shocking) {
+        shakeX = (Math.random() - 0.5) * 24 * shockAmp;
+        shakeY = (Math.random() - 0.5) * 24 * shockAmp;
+      }
+
+      ctx.save();
+      ctx.translate(shakeX, shakeY);
+
+      const displayAspect = videoWidth / videoHeight;
+      const canvasAspect = canvas.width / canvas.height;
+      let drawW, drawH, offsetX, offsetY;
+      if (canvasAspect > displayAspect) {
+        drawH = canvas.height;
+        drawW = canvas.height * displayAspect;
+        offsetX = (canvas.width - drawW) / 2;
+        offsetY = 0;
+      } else {
+        drawW = canvas.width;
+        drawH = canvas.width / displayAspect;
+        offsetX = 0;
+        offsetY = (canvas.height - drawH) / 2;
+      }
+
+      ctx.save();
+      ctx.translate(offsetX + drawW / 2, offsetY + drawH / 2);
+      if (mirror) ctx.scale(-1, 1);
+      const scaleX = drawW / videoWidth;
+      const scaleY = drawH / videoHeight;
+      ctx.scale(scaleX, scaleY);
+
+      ctx.drawImage(video, -videoWidth / 2, -videoHeight / 2, videoWidth, videoHeight);
+
+      const connections = [
+        ['left_shoulder','right_shoulder'],
+        ['left_shoulder','left_elbow'],
+        ['left_elbow','left_wrist'],
+        ['right_shoulder','right_elbow'],
+        ['right_elbow','right_wrist'],
+        ['left_shoulder','left_hip'],
+        ['right_shoulder','right_hip'],
+        ['left_hip','right_hip'],
+        ['left_hip','left_knee'],
+        ['left_knee','left_ankle'],
+        ['right_hip','right_knee'],
+        ['right_knee','right_ankle'],
+        ['nose','left_eye'],
+        ['nose','right_eye'],
+        ['left_eye','right_eye'],
+        ['left_eye','left_ear'],
+        ['right_eye','right_ear'],
+        ['left_shoulder','nose'],
+        ['right_shoulder','nose']
+      ];
+
+      const minScale = Math.min(scaleX, scaleY);
+      const baseLineWidth = 6 / minScale;
+      const lineWidth = baseLineWidth * (1 + shockAmp * 1.8);
+
+      // Skeleton turns bright white + glows during the shock
+      ctx.strokeStyle = shocking ? '#ffffff' : '#00ff00';
+      ctx.lineWidth = lineWidth;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      if (shocking) {
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = 26 * shockAmp;
+      }
+
+      const headPositions = [];
+
+      for (let i = 0; i < poses.length; i++) {
+        const pose = poses[i];
+        const rawKeypoints = pose.keypoints;
+        const keypoints = shocking ? jitterKeypoints(rawKeypoints, shockAmp) : rawKeypoints;
+
+        const kpMap = {};
+        for (let k = 0; k < keypoints.length; k++) {
+          const kp = keypoints[k];
+          if (kp) kpMap[kp.name] = kp;
+        }
+
+        // --- bones ---
+        for (let c = 0; c < connections.length; c++) {
+          const nameA = connections[c][0];
+          const nameB = connections[c][1];
+          const a = kpMap[nameA];
+          const b = kpMap[nameB];
+          if (a && b && a.score > 0.25 && b.score > 0.25) {
+            ctx.beginPath();
+            ctx.moveTo(a.x - videoWidth / 2, a.y - videoHeight / 2);
+            ctx.lineTo(b.x - videoWidth / 2, b.y - videoHeight / 2);
+            ctx.stroke();
+          }
+        }
+
+        // --- head box ---
+        const nose = kpMap['nose'];
+        const leftEye = kpMap['left_eye'];
+        const rightEye = kpMap['right_eye'];
+        if (nose && leftEye && rightEye &&
+            nose.score > 0.25 && leftEye.score > 0.25 && rightEye.score > 0.25) {
+          const cx = (leftEye.x + rightEye.x) / 2;
+          const cy = (leftEye.y + rightEye.y) / 2;
+          const eyeDist = Math.hypot(leftEye.x - rightEye.x, leftEye.y - rightEye.y);
+          const w = eyeDist * 3;
+          const h = w * 1.2;
+
+          ctx.strokeStyle = shocking ? '#ffffff' : '#00ff00';
+          ctx.lineWidth = lineWidth;
+          ctx.strokeRect(cx - videoWidth / 2 - w / 2, cy - videoHeight / 2 - h / 2, w, h);
+
+          headPositions.push({ cx: cx, cy: cy, w: w, h: h });
+        }
+
+        // --- ⚡ LIGHTNING ARCS ⚡ ---
+        if (shockAmp > 0.08) {
+          const valid = [];
+          for (let k = 0; k < keypoints.length; k++) {
+            const kp = keypoints[k];
+            if (kp && kp.score > 0.25) valid.push(kp);
+          }
+          if (valid.length > 1) {
+            ctx.save();
+            ctx.strokeStyle = '#ffffff';
+            ctx.shadowColor = '#bfe9ff';
+            ctx.shadowBlur = 34;
+            ctx.lineCap = 'round';
+
+            const arcs = 5 + Math.floor(shockAmp * 6);
+            for (let aIdx = 0; aIdx < arcs; aIdx++) {
+              const p1 = valid[(Math.random() * valid.length) | 0];
+              let p2;
+              if (Math.random() < 0.55) {
+                p2 = valid[(Math.random() * valid.length) | 0];
+              } else {
+                // arc off into space
+                p2 = {
+                  x: p1.x + (Math.random() - 0.5) * 900,
+                  y: p1.y + (Math.random() - 0.5) * 900
+                };
+              }
+              ctx.lineWidth = (1.5 + Math.random() * 3.5) / minScale;
+              drawLightning(
+                p1.x - videoWidth / 2, p1.y - videoHeight / 2,
+                p2.x - videoWidth / 2, p2.y - videoHeight / 2,
+                11, 70 * shockAmp
+              );
+            }
+            ctx.restore();
+          }
+        }
+      }
+
+      ctx.restore(); // undo scale/mirror/center
+      ctx.restore(); // undo shake
+
+      /* ---------- white flash overlay ---------- */
+      if (shocking) {
+        ctx.save();
+        ctx.globalAlpha = 0.16 * shockAmp;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+      }
+
+      /* ---------- "ART WORKER" label ---------- */
+      for (let i = 0; i < headPositions.length; i++) {
+        const pos = headPositions[i];
+        const mirrorFactor = mirror ? -1 : 1;
+        const cxShift = pos.cx - videoWidth / 2;
+        const cyShift = pos.cy - videoHeight / 2;
+        const cxMirrored = mirrorFactor * cxShift * scaleX;
+        const cyMirrored = cyShift * scaleY;
+        const screenX = offsetX + drawW / 2 + cxMirrored + shakeX;
+        const screenY = offsetY + drawH / 2 + cyMirrored + shakeY;
+        const screenH = pos.h * scaleY;
+
+        if (shocking) {
+          ctx.save();
+          ctx.shadowColor = '#ffffff';
+          ctx.shadowBlur = 20;
+          ctx.fillStyle = Math.random() < 0.4 ? '#ffffff' : '#ff2200';
+          ctx.font = 'bold 40px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText('⚡ SHOCK ⚡', screenX, screenY - screenH / 2 - 10);
+          ctx.restore();
+        } else {
+          ctx.fillStyle = '#ff0000';
+          ctx.font = '36px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText('ART WORKER', screenX, screenY - screenH / 2 - 10);
+        }
+      }
+
+      requestAnimationFrame(detectAndDraw);
+    }
+
+    /* ============================================================
+       INIT
+       ============================================================ */
+    async function init() {
+      try {
+        await setupCamera('user');
+        videoReady = true;
+        cameraBtn.textContent = '📷 Front camera';
+        await loadDetector();
+        loadingEl.classList.add('hidden');
+        resizeCanvas();
+        shockState.nextAt = performance.now() + shockIntervalMs;
+        detectAndDraw();
+      } catch (err) {
+        console.error(err);
+        loadingEl.innerHTML = '<pre>Error: ' + err.message + '</pre>';
+      }
+    }
+
+    init();
+  })();
+  </script>
+</body>
+</html>
